@@ -33,13 +33,13 @@ var _ = Describe("MySQL controller", func() {
 		// set index for mysqluser with spec.mysqlName
 		cache := k8sManager.GetCache()
 		indexFunc := func(obj client.Object) []string {
-			return []string{obj.(*mysqlv1alpha1.MySQLUser).Spec.MysqlName}
+			return []string{obj.(*mysqlv1alpha1.MySQLUser).Spec.ClusterName}
 		}
 		if err := cache.IndexField(ctx, &mysqlv1alpha1.MySQLUser{}, "spec.mysqlName", indexFunc); err != nil {
 			panic(err)
 		}
 		indexFunc = func(obj client.Object) []string {
-			return []string{obj.(*mysqlv1alpha1.MySQLDB).Spec.MysqlName}
+			return []string{obj.(*mysqlv1alpha1.MySQLDB).Spec.ClusterName}
 		}
 		if err := cache.IndexField(ctx, &mysqlv1alpha1.MySQLDB{}, "spec.mysqlName", indexFunc); err != nil {
 			panic(err)

@@ -76,7 +76,7 @@ func (r *MySQLDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// 2. Fetch MySQL
 	mysql := &mysqlv1alpha1.MySQL{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: mysqlDB.Spec.MysqlName}, mysql); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: mysqlDB.Spec.ClusterName}, mysql); err != nil {
 		log.Error(err, "[FetchMySQL] Failed")
 		mysqlDB.Status.Phase = mysqlDBPhaseNotReady
 		mysqlDB.Status.Reason = mysqlDBReasonMySQLFetchFailed

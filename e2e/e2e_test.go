@@ -357,7 +357,7 @@ func newMySQLUser(name, mysqlName, namespace string) *mysqlv1alpha1.MySQLUser {
 		TypeMeta:   metav1.TypeMeta{APIVersion: apiVersion, Kind: "MySQL"},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: mysqlv1alpha1.MySQLUserSpec{
-			MysqlName: mysqlName,
+			ClusterName: mysqlName,
 		},
 	}
 }
@@ -366,7 +366,7 @@ func newMySQLDB(name, dbName, mysqlName, namespace string) *mysqlv1alpha1.MySQLD
 	return &mysqlv1alpha1.MySQLDB{
 		TypeMeta:   metav1.TypeMeta{APIVersion: apiVersion, Kind: "MySQLDB"},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       mysqlv1alpha1.MySQLDBSpec{DBName: dbName, MysqlName: mysqlName},
+		Spec:       mysqlv1alpha1.MySQLDBSpec{DBName: dbName, ClusterName: mysqlName},
 	}
 }
 

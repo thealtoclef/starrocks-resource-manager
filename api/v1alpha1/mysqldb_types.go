@@ -25,8 +25,10 @@ import (
 // MySQLDBSpec defines the desired state of MySQLDB
 type MySQLDBSpec struct {
 
-	// MySQL (CRD) name to reference to, which decides the destination MySQL server
-	MysqlName string `json:"mysqlName"`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Cluster name is immutable"
+
+	// Cluster name to reference to, which decides the destination
+	ClusterName string `json:"clusterName"`
 
 	// MySQL Database name
 	DBName string `json:"dbName"`
@@ -63,7 +65,7 @@ type MySQLDB struct {
 }
 
 func (m MySQLDB) GetKey() string {
-	return fmt.Sprintf("%s-%s-%s", m.Namespace, m.Spec.MysqlName, m.Spec.DBName)
+	return fmt.Sprintf("%s-%s-%s", m.Namespace, m.Spec.ClusterName, m.Spec.DBName)
 }
 
 //+kubebuilder:object:root=true

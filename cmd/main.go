@@ -162,13 +162,13 @@ func main() {
 	// this is necessary to get MySQLUser/MySQLDB that references a MySQL
 	cache := mgr.GetCache()
 	indexFunc := func(obj client.Object) []string {
-		return []string{obj.(*mysqlv1alpha1.MySQLUser).Spec.MysqlName}
+		return []string{obj.(*mysqlv1alpha1.MySQLUser).Spec.ClusterName}
 	}
 	if err := cache.IndexField(context.TODO(), &mysqlv1alpha1.MySQLUser{}, "spec.mysqlName", indexFunc); err != nil {
 		panic(err)
 	}
 	indexFunc = func(obj client.Object) []string {
-		return []string{obj.(*mysqlv1alpha1.MySQLDB).Spec.MysqlName}
+		return []string{obj.(*mysqlv1alpha1.MySQLDB).Spec.ClusterName}
 	}
 	if err := cache.IndexField(context.TODO(), &mysqlv1alpha1.MySQLDB{}, "spec.mysqlName", indexFunc); err != nil {
 		panic(err)

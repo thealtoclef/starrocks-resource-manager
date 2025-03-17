@@ -112,7 +112,7 @@ func newMySQLUser(apiVersion, namespace, name, mysqlName string) *mysqlv1alpha1.
 			Namespace: namespace,
 			Name:      name,
 		},
-		Spec: mysqlv1alpha1.MySQLUserSpec{MysqlName: mysqlName},
+		Spec: mysqlv1alpha1.MySQLUserSpec{ClusterName: mysqlName},
 	}
 }
 
@@ -123,7 +123,7 @@ func newMySQLDB(apiVersion, namespace, objName, dbName, mysqlName string) *mysql
 			Namespace: namespace,
 			Name:      objName,
 		},
-		Spec: mysqlv1alpha1.MySQLDBSpec{MysqlName: mysqlName, DBName: dbName},
+		Spec: mysqlv1alpha1.MySQLDBSpec{ClusterName: mysqlName, DBName: dbName},
 	}
 }
 
