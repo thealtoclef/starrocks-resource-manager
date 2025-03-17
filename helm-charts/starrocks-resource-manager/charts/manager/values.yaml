@@ -1,0 +1,25 @@
+# Default values for manager.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+host: ~
+port: 9030
+rootPasswordFromSecret: ~
+users: []
+  # - username: test_user
+  #   password: test_password
+  #   grants:
+  #     - privileges:
+  #         - SELECT
+  #         - ALTER
+  #         - INSERT
+  #       target: TABLE db1.tbl1
+  #     - privileges:
+  #         - SELECT
+  #       target: ALL TABLES IN DATABASE db1
+  #     - privileges:
+  #         - SELECT
+  #       target: ALL TABLES IN ALL DATABASES
+  #     - privileges:
+  #         - USAGE
+  #       target: RESOURCE 'test_resource'

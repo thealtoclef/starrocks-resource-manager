@@ -1,0 +1,19 @@
+{{- range .Values.users }}
+---
+apiVersion: mysql.nakamasato.com/v1alpha1
+kind: MySQLUser
+metadata:
+  name: {{ template "manager.fullname" $ }}-{{ .username | replace "_" "-" }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "manager.labels" $ | nindent 4 }}
+spec:
+  clusterName: {{ template "manager.fullname" $ }}
+  username: {{ .username }}
+  secretRef:
+    name: {{ template "manager.fullname" $ }}-user-credentials
+    key: {{ .username }}
+  {{- if .grants }}
+  grants:
+    {{- toYaml .grants | nindent 4 }}
+  {{- end }}
+{{- end }}

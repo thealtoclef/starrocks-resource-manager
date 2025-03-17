@@ -1,0 +1,54 @@
+# set gcp if you use GCP SecretManager
+# set k8s if you use Kubernetes secrets
+adminUserSecretType: raw # set gcp if you use GCP SecretManager
+# gcpServiceAccount: GSA_NAME@GSA_PROJECT.iam.gserviceaccount.com
+# gcpProjectId: <projectid>
+# cloudSQL:
+#   instanceConnectionName:
+#   enableIamAuth: false
+#   usePrivateIp: false
+k8sSecretNamespace: default
+controllerManager:
+  replicas: 1
+  manager:
+    image:
+      repository: ghcr.io/thealtoclef/starrocks-resource-manager
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    securityContext:
+      privileged: false
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 65534
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+managerConfig:
+  controllerManagerConfigYaml:
+    health:
+      healthProbeBindAddress: :8081
+    leaderElection:
+      leaderElect: true
+      resourceName: dfc6d3c2.nakamasato.com
+    metrics:
+      bindAddress: 127.0.0.1:8080
+    webhook:
+      port: 9443
+metricsService:
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: https
+  type: ClusterIP

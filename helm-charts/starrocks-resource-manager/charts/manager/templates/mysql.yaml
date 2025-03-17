@@ -1,0 +1,15 @@
+apiVersion: mysql.nakamasato.com/v1alpha1
+kind: MySQL
+metadata:
+  name: {{ template "manager.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "manager.labels" . | nindent 4 }}
+spec:
+  host: {{ .Values.host }}
+  port: {{ .Values.port }}
+  adminUser:
+    name: root
+    type: raw
+  adminPassword:
+    name: {{ .Values.rootPasswordFromSecret }}
+    type: k8s
