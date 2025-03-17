@@ -17,20 +17,53 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+type SecretRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+// Grant defines the privileges and the resource for a MySQL user
+type Grant struct {
+
+	// Privileges to grant to the user
+	Privileges []string `json:"privileges"`
+
+	// Target on which the privileges are applied
+	Target string `json:"target"`
+}
 
 // MySQLUserSpec defines the desired state of MySQLUser
 type MySQLUserSpec struct {
 
-	// MySQL (CRD) name to reference to, which decides the destination MySQL server
-	MysqlName string `json:"mysqlName"`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Cluster name is immutable"
+
+	// Cluster name to reference to, which decides the destination
+	ClusterName string `json:"clusterName"`
+
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Username is immutable"
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z][a-zA-Z0-9_]*$`
+	// +kubebuilder:validation:MaxLength=64
+
+	// Username
+	Username string `json:"username"`
 
 	// +kubebuilder:default=%
-	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Host is immutable"
+	// +kubebuilder:validation:Pattern=`^(\*|%|[a-zA-Z0-9._-]+|\d{1,3}(\.\d{1,3}){3})$`
 
-	// MySQL hostname for MySQL account
+	// Host address where the client connects, default to '%'
 	Host string `json:"host"`
+
+	// Secret to reference to, which contains the password
+	SecretRef SecretRef `json:"secretRef"`
+
+	// Grants of database user
+	Grants []Grant `json:"grants,omitempty"`
 }
 
 // MySQLUserStatus defines the observed state of MySQLUser
@@ -46,13 +79,8 @@ type MySQLUserStatus struct {
 
 	// +kubebuilder:default=false
 
-	// true if MySQL user is created
-	MySQLUserCreated bool `json:"mysql_user_created,omitempty"`
-
-	// +kubebuilder:default=false
-
-	// true if Secret is created
-	SecretCreated bool `json:"secret_created,omitempty"`
+	// true if user is created
+	UserCreated bool `json:"userCreated,omitempty"`
 }
 
 func (m *MySQLUser) GetConditions() []metav1.Condition {
@@ -65,8 +93,7 @@ func (m *MySQLUser) SetConditions(conditions []metav1.Condition) {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:printcolumn:name="MySQLUser",type="boolean",JSONPath=".status.mysql_user_created",description="true if MySQL user is created"
-//+kubebuilder:printcolumn:name="Secret",type="boolean",JSONPath=".status.secret_created",description="true if Secret is created"
+//+kubebuilder:printcolumn:name="MySQLUser",type="boolean",JSONPath=".status.userCreated",description="true if user is created"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of this MySQLUser"
 //+kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.reason",description="The reason for the current phase of this MySQLUser"
 
@@ -77,6 +104,10 @@ type MySQLUser struct {
 
 	Spec   MySQLUserSpec   `json:"spec,omitempty"`
 	Status MySQLUserStatus `json:"status,omitempty"`
+}
+
+func (u MySQLUser) GetUserIdentity() string {
+	return fmt.Sprintf("'%s'@'%s'", u.Spec.Username, u.Spec.Host)
 }
 
 //+kubebuilder:object:root=true

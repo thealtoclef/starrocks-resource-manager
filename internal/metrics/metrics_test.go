@@ -6,13 +6,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestMySQLUserCreatedMetrics(t *testing.T) {
+func TestUserCreatedMetrics(t *testing.T) {
 	MysqlUserCreatedTotal.Increment()
-	actual := testutil.ToFloat64(mysqlUserCreatedTotal)
+	actual := testutil.ToFloat64(userCreatedTotal)
 	assertFloat64(t, float64(1), actual)
 
 	MysqlUserCreatedTotal.Increment()
-	actual = testutil.ToFloat64(mysqlUserCreatedTotal)
+	actual = testutil.ToFloat64(userCreatedTotal)
 	assertFloat64(t, float64(2), actual)
 }
 
