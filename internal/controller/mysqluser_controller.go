@@ -20,7 +20,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -38,17 +37,19 @@ import (
 	mysqlv1alpha1 "github.com/nakamasato/mysql-operator/api/v1alpha1"
 	"github.com/nakamasato/mysql-operator/internal/metrics"
 	mysqlinternal "github.com/nakamasato/mysql-operator/internal/mysql"
-	"github.com/nakamasato/mysql-operator/internal/utils"
 )
 
 const (
-	mysqlUserFinalizer                     = "mysqluser.nakamasato.com/finalizer"
-	mysqlUserReasonCompleted               = "Both secret and mysql user are successfully created."
-	mysqlUserReasonMySQLConnectionFailed   = "Failed to connect to mysql"
-	mysqlUserReasonMySQLFailedToCreateUser = "Failed to create MySQL user"
-	mysqlUserReasonMySQLFetchFailed        = "Failed to fetch MySQL"
-	mysqlUserPhaseReady                    = "Ready"
-	mysqlUserPhaseNotReady                 = "NotReady"
+	mysqlUserFinalizer                         = "mysqluser.nakamasato.com/finalizer"
+	mysqlUserReasonCompleted                   = "User are successfully reconciled"
+	mysqlUserReasonMySQLConnectionFailed       = "Failed to connect to cluster"
+	mysqlUserReasonMySQLFailedToCreateUser     = "Failed to create user"
+	mysqlUserReasonMySQLFailedToUpdatePassword = "Failed to update password"
+	mysqlUserReasonMySQLFailedToGetSecret      = "Failed to get Secret"
+	mysqlUserReasonMYSQLFailedToGrant          = "Failed to grant"
+	mysqlUserReasonMySQLFetchFailed            = "Failed to fetch cluster"
+	mysqlUserPhaseReady                        = "Ready"
+	mysqlUserPhaseNotReady                     = "NotReady"
 )
 
 // MySQLUserReconciler reconciles a MySQLUser object
@@ -82,26 +83,29 @@ func (r *MySQLUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Error(err, "[FetchMySQLUser] Failed")
 		return ctrl.Result{}, err
 	}
-	log.Info("[FetchMySQLUser] Found.", "name", mysqlUser.ObjectMeta.Name, "mysqlUser.Namespace", mysqlUser.Namespace)
-	mysqlUserName := mysqlUser.ObjectMeta.Name
-	mysqlName := mysqlUser.Spec.MysqlName
+	log.Info("[FetchMySQLUser] Found.", "name", mysqlUser.Name, "mysqlUser.Namespace", mysqlUser.Namespace)
+	clusterName := mysqlUser.Spec.ClusterName
+	userIdentity := mysqlUser.GetUserIdentity()
+	secretRef := mysqlUser.Spec.SecretRef
+	grants := mysqlUser.Spec.Grants
 
 	// Fetch MySQL
 	mysql := &mysqlv1alpha1.MySQL{}
-	var mysqlNamespacedName = client.ObjectKey{Namespace: req.Namespace, Name: mysqlUser.Spec.MysqlName}
+	var mysqlNamespacedName = client.ObjectKey{Namespace: req.Namespace, Name: clusterName}
 	if err := r.Get(ctx, mysqlNamespacedName, mysql); err != nil {
 		log.Error(err, "[FetchMySQL] Failed")
 		mysqlUser.Status.Phase = mysqlUserPhaseNotReady
 		mysqlUser.Status.Reason = mysqlUserReasonMySQLFetchFailed
 		if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
-			log.Error(serr, "Failed to update mysqluser status", "mysqlUser", mysqlUser.Name)
+			log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	log.Info("[FetchMySQL] Found")
 
 	// SetOwnerReference if not exists
-	if !r.ifOwnerReferencesContains(mysqlUser.ObjectMeta.OwnerReferences, mysql) {
+	if !r.ifOwnerReferencesContains(mysqlUser.OwnerReferences, mysql) {
 		err := controllerutil.SetControllerReference(mysql, mysqlUser, r.Scheme)
 		if err != nil {
 			return ctrl.Result{}, err //requeue
@@ -115,19 +119,14 @@ func (r *MySQLUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Get MySQL client
 	mysqlClient, err := r.MySQLClients.GetClient(mysql.GetKey())
 	if err != nil {
-		log.Error(err, "Failed to get MySQL client", "key", mysql.GetKey())
-		return ctrl.Result{}, err
-	}
-
-	if err != nil {
 		mysqlUser.Status.Phase = mysqlUserPhaseNotReady
 		mysqlUser.Status.Reason = mysqlUserReasonMySQLConnectionFailed
-		log.Error(err, "[MySQLClient] Failed to connect to MySQL", "mysqlName", mysqlName)
+		log.Error(err, "[MySQLClient] Failed to connect to cluster", "key", mysql.GetKey(), "clusterName", clusterName)
 		if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
-			log.Error(serr, "Failed to update mysqluser status", "mysqlUser", mysqlUser.Name)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+			log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
 		}
-		return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
+		return ctrl.Result{}, err //requeue
 	}
 	log.Info("[MySQLClient] Successfully connected")
 
@@ -182,63 +181,76 @@ func (r *MySQLUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Get password from Secret if exists. Otherwise, generate new one.
-	secretName := getSecretName(mysqlName, mysqlUserName)
+	// Get password from Secret
 	secret := &v1.Secret{}
-	err = r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: secretName}, secret)
-	var password string
+	err = r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: secretRef.Name}, secret)
 	if err != nil {
-		if errors.IsNotFound(err) { // Secret doesn't exists -> generate password
-			log.Info("[password] Generate new password for Secret", "secretName", secretName)
-			password = utils.GenerateRandomString(16)
-		} else {
-			log.Error(err, "[password] Failed to get Secret", "secretName", secretName)
-			return ctrl.Result{}, err // requeue
-		}
-	} else { // exists -> get password from Secret
-		// password = string(secret.Data["password"])
-		// TODO: check if the password is valid
-		return ctrl.Result{}, nil
-	}
-
-	// Create MySQL user if not exists with the password set above.
-	_, err = mysqlClient.ExecContext(ctx,
-		fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s'", mysqlUserName, mysqlUser.Spec.Host, password))
-	if err != nil {
-		log.Error(err, "[MySQL] Failed to create MySQL user.", "mysqlName", mysqlName, "mysqlUserName", mysqlUserName)
+		log.Error(err, "[password] Failed to get Secret", "secretRef", secretRef)
 		mysqlUser.Status.Phase = mysqlUserPhaseNotReady
-		mysqlUser.Status.Reason = mysqlUserReasonMySQLFailedToCreateUser
-		mysqlUser.Status.MySQLUserCreated = false
+		mysqlUser.Status.Reason = mysqlUserReasonMySQLFailedToGetSecret
 		if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
-			log.Error(serr, "Failed to update mysqluser status", "mysqlUser", mysqlUser.Name)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+			log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
 		}
-		return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	log.Info("[password] Get password from Secret", "secretRef", secretRef)
+	password := string(secret.Data[secretRef.Key])
+
+	// Check if MySQL user exists
+	_, err = mysqlClient.ExecContext(ctx, fmt.Sprintf("SHOW GRANTS FOR %s", userIdentity))
+	if err != nil {
+		// Create User if not exists with the password set above.
+		_, err = mysqlClient.ExecContext(ctx,
+			fmt.Sprintf("CREATE USER IF NOT EXISTS %s IDENTIFIED BY '%s'", userIdentity, password))
+		if err != nil {
+			log.Error(err, "[MySQL] Failed to create User", "clusterName", clusterName, "userIdentity", userIdentity)
+			mysqlUser.Status.Phase = mysqlUserPhaseNotReady
+			mysqlUser.Status.Reason = mysqlUserReasonMySQLFailedToCreateUser
+			if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
+				log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+				return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
+			}
+			return ctrl.Result{}, err //requeue
+		}
+		log.Info("[MySQL] Created User", "clusterName", clusterName, "userIdentity", userIdentity)
+		mysqlUser.Status.UserCreated = true
+		metrics.MysqlUserCreatedTotal.Increment()
+	} else {
+		mysqlUser.Status.UserCreated = true
+		// Update password of User if already exists with the password set above.
+		_, err = mysqlClient.ExecContext(ctx,
+			fmt.Sprintf("ALTER USER %s IDENTIFIED BY '%s'", userIdentity, password))
+		if err != nil {
+			log.Error(err, "[MySQL] Failed to update password of User", "clusterName", clusterName, "userIdentity", userIdentity)
+			mysqlUser.Status.Phase = mysqlUserPhaseNotReady
+			mysqlUser.Status.Reason = mysqlUserReasonMySQLFailedToUpdatePassword
+			if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
+				log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+				return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
+			}
+			return ctrl.Result{}, err //requeue
+		}
+		log.Info("[MySQL] Updated password of User", "clusterName", clusterName, "userIdentity", userIdentity)
 	}
 
-	log.Info("[MySQL] Created or updated", "name", mysqlUserName, "mysqlUser.Namespace", mysqlUser.Namespace)
-	metrics.MysqlUserCreatedTotal.Increment() // TODO: increment only when a user is created
-	mysqlUser.Status.Phase = mysqlUserPhaseNotReady
-	mysqlUser.Status.Reason = "mysql user is successfully created. Secret is being created."
-	mysqlUser.Status.MySQLUserCreated = true
-
-	err = r.createSecret(ctx, password, secretName, mysqlUser.Namespace, mysqlUser)
-	// TODO: #35 add test if mysql user is successfully created but secret is failed to create
+	// Update Grants
+	err = r.updateGrants(ctx, mysqlClient, userIdentity, grants)
 	if err != nil {
-		log.Error(err, "Failed to create secret", "secretName", secretName, "namespace", mysqlUser.Namespace, "mysqlUser", mysqlUser.Name)
-		mysqlUser.Status.Reason = "Failed to create Secret"
-		mysqlUser.Status.SecretCreated = false
+		log.Error(err, "[MySQL] Failed to update Grants", "clusterName", clusterName, "userIdentity", userIdentity)
+		mysqlUser.Status.Phase = mysqlUserPhaseNotReady
+		mysqlUser.Status.Reason = mysqlUserReasonMYSQLFailedToGrant
 		if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
-			log.Error(serr, "Failed to update mysqluser status", "mysqlUser", mysqlUser.Name)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+			log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil // requeue after 1 second
 		}
 		return ctrl.Result{}, err
 	}
+	// Update phase and reason of MySQLUser status to Ready and Completed
 	mysqlUser.Status.Phase = mysqlUserPhaseReady
 	mysqlUser.Status.Reason = mysqlUserReasonCompleted
-	mysqlUser.Status.SecretCreated = true
 	if serr := r.Status().Update(ctx, mysqlUser); serr != nil {
-		log.Error(serr, "Failed to update mysqluser status", "mysqlUser", mysqlUser.Name)
+		log.Error(serr, "Failed to update MySQLUser status", "mysqlUser", mysqlUser.Name)
 	}
 
 	return ctrl.Result{}, nil
@@ -253,45 +265,14 @@ func (r *MySQLUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // finalizeMySQLUser drops MySQL user
 func (r *MySQLUserReconciler) finalizeMySQLUser(ctx context.Context, mysqlClient *sql.DB, mysqlUser *mysqlv1alpha1.MySQLUser) error {
-	if mysqlUser.Status.MySQLUserCreated {
-		_, err := mysqlClient.ExecContext(ctx, fmt.Sprintf("DROP USER IF EXISTS '%s'@'%s'", mysqlUser.Name, mysqlUser.Spec.Host))
+	if mysqlUser.Status.UserCreated {
+		_, err := mysqlClient.ExecContext(ctx, fmt.Sprintf("DROP USER IF EXISTS '%s'@'%s'", mysqlUser.Spec.Username, mysqlUser.Spec.Host))
 		if err != nil {
 			return err
 		}
 		metrics.MysqlUserDeletedTotal.Increment()
 	}
 
-	return nil
-}
-
-func getSecretName(mysqlName string, mysqlUserName string) string {
-	str := []string{"mysql", mysqlName, mysqlUserName}
-	return strings.Join(str, "-")
-}
-
-func (r *MySQLUserReconciler) createSecret(ctx context.Context, password string, secretName string, namespace string, mysqlUser *mysqlv1alpha1.MySQLUser) error {
-	log := log.FromContext(ctx)
-	data := make(map[string][]byte)
-	data["password"] = []byte(password)
-	secret := &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-		},
-	}
-	err := ctrl.SetControllerReference(mysqlUser, secret, r.Scheme) // Set owner of this Secret
-	if err != nil {
-		log.Error(err, "Failed to SetControllerReference for Secret.")
-		return err
-	}
-	if _, err := ctrl.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		secret.Data = data
-		log.Info("Successfully created Secret.")
-		return nil
-	}); err != nil {
-		log.Error(err, "Error creating or updating Secret.")
-		return err
-	}
 	return nil
 }
 
@@ -302,4 +283,8 @@ func (r *MySQLUserReconciler) ifOwnerReferencesContains(ownerReferences []metav1
 		}
 	}
 	return false
+}
+func (r *MySQLUserReconciler) updateGrants(ctx context.Context, mysqlClient *sql.DB, userIdentity string, grants []mysqlv1alpha1.Grant) error {
+	// TODO: Implement this method
+	return nil
 }

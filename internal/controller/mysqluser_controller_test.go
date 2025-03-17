@@ -90,7 +90,7 @@ var _ = Describe("MySQLUser controller", func() {
 				// secret should be created
 				secret := &v1.Secret{}
 				Eventually(func() error {
-					return k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: getSecretName(MySQLName, MySQLUserName)}, secret)
+					return k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: mysqlUser.Spec.SecretRef.Name}, secret)
 				}).Should(Succeed())
 
 				// status.phase should be ready
@@ -194,7 +194,7 @@ var _ = Describe("MySQLUser controller", func() {
 				}).Should(BeTrue())
 
 				secret := &v1.Secret{}
-				secretName := getSecretName(MySQLName, MySQLUserName)
+				secretName := mysqlUser.Spec.SecretRef.Name
 				Eventually(func() bool {
 					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: secretName}, secret)
 					return errors.IsNotFound(err) // Secret should not exist
@@ -294,7 +294,7 @@ var _ = Describe("MySQLUser controller", func() {
 				// Secret should not be created
 				secret := &v1.Secret{}
 				Consistently(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: getSecretName(MySQLName, MySQLUserName)}, secret)
+					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: mysqlUser.Spec.SecretRef.Name}, secret)
 					return errors.IsNotFound(err)
 				}).Should(BeTrue())
 			})
@@ -307,7 +307,7 @@ var _ = Describe("MySQLUser controller", func() {
 				// Secret should not be created
 				secret := &v1.Secret{}
 				Consistently(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: getSecretName(MySQLName, MySQLUserName)}, secret)
+					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: mysqlUser.Spec.SecretRef.Name}, secret)
 					return errors.IsNotFound(err)
 				}).Should(BeTrue())
 
@@ -351,7 +351,7 @@ var _ = Describe("MySQLUser controller", func() {
 				// Secret will not be created
 				secret := &v1.Secret{}
 				Consistently(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: getSecretName(MySQLName, MySQLUserName)}, secret)
+					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: Namespace, Name: mysqlUser.Spec.SecretRef.Name}, secret)
 					return errors.IsNotFound(err)
 				}).Should(BeTrue())
 
