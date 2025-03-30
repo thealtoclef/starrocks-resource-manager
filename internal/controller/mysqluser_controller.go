@@ -20,6 +20,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -284,7 +287,127 @@ func (r *MySQLUserReconciler) ifOwnerReferencesContains(ownerReferences []metav1
 	}
 	return false
 }
+
+func (r *MySQLUserReconciler) grantPrivileges(ctx context.Context, mysqlClient *sql.DB, userIdentity string, grant mysqlv1alpha1.Grant) error {
+	log := log.FromContext(ctx)
+	_, err := mysqlClient.ExecContext(ctx, fmt.Sprintf("GRANT %s ON %s TO %s;", strings.Join(grant.Privileges, ","), grant.Target, userIdentity))
+	if err != nil {
+		return err
+	}
+	log.Info("[UserPrivs] Grant", "userIdentity", userIdentity, "privileges", grant.Privileges, "target", grant.Target)
+	return nil
+}
+
+func (r *MySQLUserReconciler) revokePrivileges(ctx context.Context, mysqlClient *sql.DB, userIdentity string, grants []mysqlv1alpha1.Grant) error {
+	log := log.FromContext(ctx)
+	for _, grant := range grants {
+		_, err := mysqlClient.ExecContext(ctx, fmt.Sprintf("REVOKE %s ON %s FROM %s;", strings.Join(grant.Privileges, ","), grant.Target, userIdentity))
+		if err != nil {
+			log.Error(err, "[UserPrivs] Revoke failed: %w", err)
+			return err
+		}
+		log.Info("[UserPrivs] Revoke", "userIdentity", userIdentity, "privileges", grant.Privileges, "target", grant.Target)
+	}
+	return nil
+}
+
+func comparePrivileges(oldPrivileges, newPrivileges []string) (revokePrivileges, addPrivileges []string) {
+	oldPrivilegeSet := make(map[string]struct{})
+	newPrivilegeSet := make(map[string]struct{})
+
+	for _, priv := range oldPrivileges {
+		oldPrivilegeSet[priv] = struct{}{}
+	}
+
+	for _, priv := range newPrivileges {
+		newPrivilegeSet[priv] = struct{}{}
+	}
+
+	for priv := range oldPrivilegeSet {
+		if _, found := newPrivilegeSet[priv]; !found {
+			revokePrivileges = append(revokePrivileges, priv)
+		}
+	}
+
+	for priv := range newPrivilegeSet {
+		if _, found := oldPrivilegeSet[priv]; !found {
+			addPrivileges = append(addPrivileges, priv)
+		}
+	}
+
+	return revokePrivileges, addPrivileges
+}
+
+func calculateGrantDiff(oldGrants, newGrants []mysqlv1alpha1.Grant) (grantsToRevoke, grantsToAdd []mysqlv1alpha1.Grant) {
+	oldGrantMap := make(map[string]mysqlv1alpha1.Grant)
+	newGrantMap := make(map[string]mysqlv1alpha1.Grant)
+
+	for _, grant := range oldGrants {
+		oldGrantMap[grant.Target] = grant
+	}
+
+	for _, grant := range newGrants {
+		newGrantMap[grant.Target] = grant
+	}
+
+	for target, oldGrant := range oldGrantMap {
+		if newGrant, found := newGrantMap[target]; found {
+			// Compare privileges and determine partial revocation and addition
+			revokePrivileges, addPrivileges := comparePrivileges(oldGrant.Privileges, newGrant.Privileges)
+			if len(revokePrivileges) > 0 {
+				grantsToRevoke = append(grantsToRevoke, mysqlv1alpha1.Grant{
+					Target:     oldGrant.Target,
+					Privileges: revokePrivileges,
+				})
+			}
+			if len(addPrivileges) > 0 {
+				grantsToAdd = append(grantsToAdd, mysqlv1alpha1.Grant{
+					Target:     newGrant.Target,
+					Privileges: addPrivileges,
+				})
+			}
+		} else {
+			grantsToRevoke = append(grantsToRevoke, oldGrant)
+		}
+	}
+
+	for target, newGrant := range newGrantMap {
+		if _, found := oldGrantMap[target]; !found {
+			grantsToAdd = append(grantsToAdd, newGrant)
+		}
+	}
+
+	return grantsToRevoke, grantsToAdd
+}
+
 func (r *MySQLUserReconciler) updateGrants(ctx context.Context, mysqlClient *sql.DB, userIdentity string, grants []mysqlv1alpha1.Grant) error {
-	// TODO: Implement this method
+	// Fetch existing grants
+	existingGrants, fetchErr := fetchExistingGrants(ctx, mysqlClient, userIdentity)
+	if fetchErr != nil {
+		return fetchErr
+	}
+
+	// Normalize grants
+	for i := range grants {
+		grants[i].Privileges = normalizePerms(grants[i].Privileges)
+	}
+
+	// Calculate grants to revoke and grants to add
+	grantsToRevoke, grantsToAdd := calculateGrantDiff(existingGrants, grants)
+
+	// Revoke obsolete grants
+	revokeErr := r.revokePrivileges(ctx, mysqlClient, userIdentity, grantsToRevoke)
+	if revokeErr != nil {
+		return revokeErr
+	}
+
+	// Grant missing grants
+	for _, grant := range grantsToAdd {
+		grantErr := r.grantPrivileges(ctx, mysqlClient, userIdentity, grant)
+		if grantErr != nil {
+			return grantErr
+		}
+	}
+
 	return nil
 }
