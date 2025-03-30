@@ -288,6 +288,230 @@ func (r *MySQLUserReconciler) ifOwnerReferencesContains(ownerReferences []metav1
 	return false
 }
 
+type Grant struct {
+	UserIdentity       sql.NullString
+	Comment            sql.NullString
+	Password           sql.NullString
+	Roles              sql.NullString
+	GlobalPrivs        sql.NullString
+	CatalogPrivs       sql.NullString
+	DatabasePrivs      sql.NullString
+	TablePrivs         sql.NullString
+	ColPrivs           sql.NullString
+	ResourcePrivs      sql.NullString
+	CloudClusterPrivs  sql.NullString
+	CloudStagePrivs    sql.NullString
+	StorageVaultPrivs  sql.NullString
+	WorkloadGroupPrivs sql.NullString
+	ComputeGroupPrivs  sql.NullString
+}
+
+type EntityType string
+
+const (
+	Table         EntityType = "table"
+	Resource      EntityType = "resource"
+	WorkloadGroup EntityType = "workload_group"
+)
+
+func (t EntityType) Equals(other EntityType) bool {
+	return t == other
+}
+
+type Entity struct {
+	Type EntityType
+	Name string
+}
+
+func (e Entity) IDString() string {
+	return fmt.Sprintf("%s:%s", e.Type, e.Name)
+}
+
+func (e Entity) SQLString() string {
+	switch e.Type {
+	case Resource:
+		return fmt.Sprintf("RESOURCE '%s'", e.Name)
+	case WorkloadGroup:
+		return fmt.Sprintf("WORKLOAD GROUP '%s'", e.Name)
+	default:
+		return e.Name
+	}
+}
+
+func (e Entity) Equals(other Entity) bool {
+	return e.Type == other.Type && e.Name == other.Name
+}
+
+func normalizeColumnOrder(perm string) string {
+	re := regexp.MustCompile(`^([^(]*)\((.*)\)$`)
+	// We may get inputs like
+	// 	SELECT(b,a,c)   -> SELECT(a,b,c)
+	// 	DELETE          -> DELETE
+	//  SELECT (a,b,c)  -> SELECT(a,b,c)
+	// if it's without parentheses, return it right away.
+	// Else split what is inside, sort it, concat together and return the result.
+	m := re.FindStringSubmatch(perm)
+	if m == nil || len(m) < 3 {
+		return perm
+	}
+
+	parts := strings.Split(m[2], ",")
+	for i := range parts {
+		parts[i] = strings.Trim(parts[i], "` ")
+	}
+	sort.Strings(parts)
+	precursor := strings.Trim(m[1], " ")
+	partsTogether := strings.Join(parts, ", ")
+	return fmt.Sprintf("%s(%s)", precursor, partsTogether)
+}
+
+func normalizePerms(perms []string) []string {
+	ret := []string{}
+	for _, perm := range perms {
+		// Remove leading and trailing backticks and spaces
+		permNorm := strings.Trim(perm, "` ")
+		permUcase := strings.ToUpper(permNorm)
+
+		permSortedColumns := normalizeColumnOrder(permUcase)
+
+		ret = append(ret, permSortedColumns)
+	}
+
+	// Sort permissions
+	sort.Strings(ret)
+
+	return ret
+}
+
+func buildGrants(privs sql.NullString, entityType EntityType) ([]mysqlv1alpha1.Grant, error) {
+	var grants []mysqlv1alpha1.Grant
+	if privs.Valid && privs.String != "" {
+		entries := strings.Split(privs.String, ";")
+		for _, entry := range entries {
+			var entity Entity = Entity{Type: entityType}
+			var privileges string
+			entryParts := strings.Split(entry, ":")
+			if len(entryParts) == 2 {
+				entity.Name = strings.TrimSpace(entryParts[0])
+				privileges = strings.TrimSpace(entryParts[1])
+			} else if len(entryParts) == 1 {
+				// If no target is specified, use global (*.*.*)
+				entity.Name = "*.*.*"
+				privileges = strings.TrimSpace(entryParts[0])
+			} else {
+				return nil, fmt.Errorf("invalid privilege format: %s", entry)
+			}
+
+			// Ensure that entity.Name matches the format *.*.* for the Table entity type
+			if entityType == Table {
+				nameParts := strings.Split(strings.TrimSpace(entity.Name), ".")
+				for len(nameParts) < 3 {
+					nameParts = append(nameParts, "*")
+				}
+				entity.Name = strings.Join(nameParts, ".")
+			}
+
+			grants = append(grants, mysqlv1alpha1.Grant{
+				Privileges: normalizePerms(strings.Split(privileges, ",")),
+				Target:     entity.SQLString(),
+			})
+		}
+	}
+	return grants, nil
+}
+
+func fetchExistingGrants(ctx context.Context, mysqlClient *sql.DB, userIdentity string) ([]mysqlv1alpha1.Grant, error) {
+	var grants []mysqlv1alpha1.Grant
+
+	log := log.FromContext(ctx)
+	rows, err := mysqlClient.QueryContext(ctx, fmt.Sprintf("SHOW GRANTS FOR %s;", userIdentity))
+	if err != nil {
+		log.Error(err, "[UserPrivs] Show grants failed")
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		log.Error(err, "[UserPrivs] Failed to get columns")
+		return nil, err
+	}
+
+	if rows.Next() {
+		var Grant Grant
+		var scanArgs []interface{}
+
+		if len(columns) == 11 { // Doris 2
+			scanArgs = []interface{}{
+				&Grant.UserIdentity,
+				&Grant.Comment,
+				&Grant.Password,
+				&Grant.Roles,
+				&Grant.GlobalPrivs,
+				&Grant.CatalogPrivs,
+				&Grant.DatabasePrivs,
+				&Grant.TablePrivs,
+				&Grant.ColPrivs,
+				&Grant.ResourcePrivs,
+				&Grant.WorkloadGroupPrivs,
+			}
+		} else if len(columns) == 15 { // Doris 3
+			scanArgs = []interface{}{
+				&Grant.UserIdentity,
+				&Grant.Comment,
+				&Grant.Password,
+				&Grant.Roles,
+				&Grant.GlobalPrivs,
+				&Grant.CatalogPrivs,
+				&Grant.DatabasePrivs,
+				&Grant.TablePrivs,
+				&Grant.ColPrivs,
+				&Grant.ResourcePrivs,
+				&Grant.CloudClusterPrivs,
+				&Grant.CloudStagePrivs,
+				&Grant.StorageVaultPrivs,
+				&Grant.WorkloadGroupPrivs,
+				&Grant.ComputeGroupPrivs,
+			}
+		} else {
+			log.Error(fmt.Errorf("unexpected number of columns"), "[UserPrivs] Unexpected number of columns", "columns", len(columns))
+			return nil, fmt.Errorf("unexpected number of columns: %d", len(columns))
+		}
+
+		err := rows.Scan(scanArgs...)
+		if err != nil {
+			log.Error(err, "[UserPrivs] Read row failed")
+			return nil, err
+		}
+
+		log.Info("[UserPrivs] Scanned row", "Grant", Grant)
+
+		entries := []struct {
+			privs      sql.NullString
+			entityType EntityType
+		}{
+			{Grant.GlobalPrivs, Table},
+			{Grant.CatalogPrivs, Table},
+			{Grant.DatabasePrivs, Table},
+			{Grant.TablePrivs, Table},
+			{Grant.ColPrivs, Table},
+			{Grant.ResourcePrivs, Resource},
+			{Grant.WorkloadGroupPrivs, WorkloadGroup},
+		}
+
+		for _, entry := range entries {
+			if builtGrants, err := buildGrants(entry.privs, entry.entityType); err != nil {
+				log.Error(err, "[UserPrivs] Build grants failed")
+				return nil, err
+			} else {
+				grants = append(grants, builtGrants...)
+			}
+		}
+	}
+	return grants, nil
+}
+
 func (r *MySQLUserReconciler) grantPrivileges(ctx context.Context, mysqlClient *sql.DB, userIdentity string, grant mysqlv1alpha1.Grant) error {
 	log := log.FromContext(ctx)
 	_, err := mysqlClient.ExecContext(ctx, fmt.Sprintf("GRANT %s ON %s TO %s;", strings.Join(grant.Privileges, ","), grant.Target, userIdentity))
